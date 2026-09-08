@@ -6,7 +6,7 @@ from datetime import date
 import math
 import hashlib
 
-app = FastAPI(title="KisanSetu Unified Mandi Procurement & Logistics Engine")
+app = FastAPI(title="KisanSetu Unified APMC Logistics & Procurement Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,7 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Official agro-climatic state yield limits (Quintals/Acre)
+# Agro-climatic legal ceiling caps (Quintals per Acre)
 CROP_YIELD_CAPS = {
     "Wheat": 25.0,
     "Paddy": 28.0,
@@ -115,7 +115,7 @@ SLOTS_DB: List[Dict] = [
         },
         "notification_log": [
             "HQ Secure Pass issued for Taraori Sub-Mandi Yard (Bay-02).",
-            "Proof-of-Harvest Verified: 45 Qtl within legal acreage quota."
+            "Proof-of-Harvest Verified: 45 Qtl within legal quota."
         ]
     },
     {
@@ -154,7 +154,6 @@ SLOTS_DB: List[Dict] = [
     }
 ]
 
-# Request Models
 class LoginRequest(BaseModel):
     phone: str
     pin: str
@@ -196,7 +195,6 @@ class CancelSlotRequest(BaseModel):
     phone: str
     reason: str
 
-# Endpoints
 @app.post("/api/login")
 def login(creds: LoginRequest):
     user = USERS_DB.get(creds.phone)
@@ -237,7 +235,7 @@ def admin_verify_ticket(req: AdminVerifyRequest):
         return {"success": False, "status": "CANCELLED", "message": f"Denied: Pass {target['id']} was CANCELLED by the farmer."}
 
     if target["status"] == "At Weighbridge":
-        return {"success": False, "status": "ALREADY_USED", "message": f"Pass {target['id']} has already entered the weighbridge!"}
+        return {"success": False, "status": "ALREADY_USED", "message": f"Pass {target['id']} has already passed through the checkpost!"}
 
     expected_hash = generate_hq_hash(target["id"], target["farmer_phone"], target["crop"])
     if target["hq_hash"] != expected_hash:
@@ -269,16 +267,13 @@ def cancel_slot(req: CancelSlotRequest):
     if slot["status"] == "Cancelled":
         return {"success": False, "message": "This pass is already cancelled."}
 
-    # 1. Cancel ticket
     slot["status"] = "Cancelled"
     slot["is_listed_for_swap"] = False
     
-    # 2. Release capacity
     time_window = slot.get("time_slot")
     if time_window in SLOT_CAPACITY and SLOT_CAPACITY[time_window] > 0:
         SLOT_CAPACITY[time_window] -= 1
         
-    # 3. Decrement downstream wait times for others in that bay
     for s in SLOTS_DB:
         if (
             s["assigned_bay"] == slot["assigned_bay"] 
@@ -289,12 +284,12 @@ def cancel_slot(req: CancelSlotRequest):
             s["estimated_wait_mins"] = max(5, s["estimated_wait_mins"] - 15)
 
     slot["notification_log"].insert(
-        0, f"🛑 Ticket cancelled by farmer. Reason: {req.reason}. Bay quota released back to system."
+        0, f"🛑 Ticket cancelled by farmer. Reason: {req.reason}. Bay quota released."
     )
     
     return {
         "success": True, 
-        "message": f"Pass {req.token_id} successfully cancelled. Capacity returned to pool.",
+        "message": f"Pass {req.token_id} cancelled successfully. Mandi capacity restored.",
         "token": slot
     }
 
@@ -359,7 +354,6 @@ def book_slot(req: SlotBookingRequest):
     msp_rates = {"Wheat": 2275, "Paddy": 2183, "Mustard": 5650}
     base_rate = msp_rates.get(req.crop, 2200)
 
-    # 1. Proof-of-Harvest Cap Check
     cap_per_acre = CROP_YIELD_CAPS.get(req.crop, 25.0)
     max_allowable_yield = round(req.registered_acres * cap_per_acre, 1)
 
@@ -370,9 +364,8 @@ def book_slot(req: SlotBookingRequest):
     if booked_quantity > max_allowable_yield:
         arbitrage_flag = True
         booked_quantity = max_allowable_yield
-        alert_msg = f"⚠️ Capped: Claimed quantity exceeded legal ceiling ({max_allowable_yield} Qtl for {req.registered_acres} Acres)."
+        alert_msg = f"⚠️ Capped: Claimed quantity exceeded {max_allowable_yield} Qtl legal quota."
 
-    # 2. Moisture Quality Evaluation
     deduction_rate = 0.0
     if req.moisture_percent <= 12.0:
         quality_grade = "Grade A (Optimal - 100% MSP)"
@@ -387,14 +380,12 @@ def book_slot(req: SlotBookingRequest):
     net_rate = max(base_rate - deduction_rate, 1000)
     final_payment = int(net_rate * booked_quantity)
 
-    # 3. Bay Assignment
     assigned_bay = "Bay-00 (FPO Green Corridor)" if req.is_green_corridor else ("Bay-01 (Express Light)" if "Bolero" in req.vehicle_type or "Pickup" in req.vehicle_type else "Bay-02 (Heavy Tractor)")
 
     selected_mandi = next((m for m in MANDI_CENTERS if m["id"] == req.mandi_id), MANDI_CENTERS[0])
     dist = calculate_distance_km(FARMER_LOCATION["lat"], FARMER_LOCATION["lon"], selected_mandi["lat"], selected_mandi["lon"])
     hq_security_hash = generate_hq_hash(token_id, req.phone, req.crop)
 
-    # Increment slot count
     SLOT_CAPACITY[req.time_slot] = SLOT_CAPACITY.get(req.time_slot, 0) + 1
 
     new_booking = {

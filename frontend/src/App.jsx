@@ -47,6 +47,10 @@ export default function App() {
   const [cancellingTokenId, setCancellingTokenId] = useState("");
   const [cancelReason, setCancelReason] = useState("Harvest not ready / Labor delay");
 
+  // Driver WhatsApp Share State
+  const [sharingTokenId, setSharingTokenId] = useState("");
+  const [driverPhone, setDriverPhone] = useState("");
+
   // Admin Portal State
   const [adminUser, setAdminUser] = useState(null);
   const [adminId, setAdminId] = useState("APMC-KARNAL-01");
@@ -262,6 +266,39 @@ export default function App() {
     }
   };
 
+  // WhatsApp Driver Dispatch Handler
+  const handleSendToDriver = (token) => {
+    if (!driverPhone || driverPhone.trim().length < 10) {
+      alert("Please enter a valid 10-digit mobile number for the driver.");
+      return;
+    }
+
+    const cleanPhone = driverPhone.replace(/\D/g, "");
+    const formattedPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+
+    const message = 
+`🌾 *KISANSETU APMC MANDI GATE PASS*
+━━━━━━━━━━━━━━━━━━━━━━
+🚜 *Pass ID:* ${token.id}
+👤 *Farmer:* ${token.farmer_name}
+📍 *Mandi Destination:* ${token.assigned_mandi}
+🚪 *Designated Bay:* ${token.assigned_bay}
+⏰ *Arrival Window:* ${token.time_slot} (${token.booking_date})
+⚖️ *Allocated Load:* ${token.quantity_quintals} Qtl (${token.crop})
+🚚 *Vehicle Type:* ${token.vehicle_type}
+🔐 *HQ Digital Sig:* ${token.hq_hash}
+
+🗺️ *Gate #2 Navigation:* https://maps.google.com/?q=29.8000,76.9200
+━━━━━━━━━━━━━━━━━━━━━━
+_Show this pass at Gate Checkpost #2 for entry._`;
+
+    const encodedMsg = encodeURIComponent(message);
+    const waUrl = `https://wa.me/${formattedPhone}?text=${encodedMsg}`;
+    window.open(waUrl, "_blank");
+    setSharingTokenId("");
+    setDriverPhone("");
+  };
+
   // Admin Verification Handler
   const handleAdminVerify = async (e) => {
     e.preventDefault();
@@ -282,7 +319,7 @@ export default function App() {
 
   return (
     <div className="app-container">
-      {/* Top Universal Mode Switcher */}
+      {/* Universal Mode Switcher */}
       <div className="top-banner-bar">
         <div className="banner-left">
           <span>🏛️ Ministry of Consumer Affairs, Food & Public Distribution</span>
@@ -415,6 +452,48 @@ export default function App() {
                                 <div><span>Arrival Window:</span> <strong>{s.time_slot} ({s.booking_date})</strong></div>
                                 <div><span>Net Payout:</span> <strong className="green-text">₹{s.net_payout?.toLocaleString()}</strong></div>
                               </div>
+
+                              {/* WhatsApp Driver Share Integration */}
+                              {s.status === "Booked" && (
+                                <div className="driver-share-box">
+                                  {sharingTokenId === s.id ? (
+                                    <div className="driver-input-card">
+                                      <label>Driver's Mobile Number (WhatsApp):</label>
+                                      <div className="driver-input-row">
+                                        <input
+                                          type="tel"
+                                          placeholder="Enter 10-digit number"
+                                          value={driverPhone}
+                                          onChange={(e) => setDriverPhone(e.target.value)}
+                                          maxLength={10}
+                                        />
+                                        <button
+                                          type="button"
+                                          className="wa-send-btn"
+                                          onClick={() => handleSendToDriver(s)}
+                                        >
+                                          📲 Open WhatsApp
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="cancel-btn"
+                                          onClick={() => { setSharingTokenId(""); setDriverPhone(""); }}
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="driver-share-btn"
+                                      onClick={() => setSharingTokenId(s.id)}
+                                    >
+                                      📲 Share Gate Pass with Driver (WhatsApp)
+                                    </button>
+                                  )}
+                                </div>
+                              )}
 
                               {/* P2P Slot Swap Action Button */}
                               {!s.is_listed_for_swap && s.status === "Booked" && (

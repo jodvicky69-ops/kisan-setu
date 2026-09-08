@@ -479,6 +479,79 @@ input:focus, select:focus {
 .slot-name { font-weight: 600; font-size: 0.9rem; }
 .slot-count { font-size: 0.78rem; font-weight: 700; }
 
+/* Driver WhatsApp Share Integration */
+.driver-share-box {
+  margin: 0.9rem 0 0.4rem 0;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--border-color);
+}
+
+.driver-share-btn {
+  width: 100%;
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+  padding: 0.55rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  transition: all 0.2s ease-in-out;
+}
+
+.driver-share-btn:hover {
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.driver-input-card {
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  padding: 0.75rem;
+  border-radius: 8px;
+}
+
+.driver-input-card label {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #166534;
+  display: block;
+  margin-bottom: 0.4rem;
+}
+
+.driver-input-row {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.driver-input-row input {
+  flex: 1;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.82rem;
+  border: 1px solid #bbf7d0;
+}
+
+.wa-send-btn {
+  background: #25d366;
+  color: white;
+  border: none;
+  padding: 0.45rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s;
+}
+
+.wa-send-btn:hover {
+  background: #1eb956;
+}
+
 /* P2P Slot Swap UI */
 .swap-listed-badge {
   background: #fef3c7;
@@ -491,9 +564,7 @@ input:focus, select:focus {
 }
 
 .swap-action-box {
-  margin: 1rem 0 0.4rem 0;
-  padding-top: 0.75rem;
-  border-top: 1px dashed var(--border-color);
+  margin: 0.5rem 0 0.4rem 0;
 }
 
 .swap-trigger-btn {
