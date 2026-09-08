@@ -11,7 +11,7 @@ const CROP_CEILINGS = {
 };
 
 export default function App() {
-  const [portalMode, setPortalMode] = useState("farmer"); // "farmer" or "admin"
+  const [portalMode, setPortalMode] = useState("farmer");
 
   // Farmer State
   const [user, setUser] = useState(null);
@@ -58,6 +58,14 @@ export default function App() {
   const [adminStats, setAdminStats] = useState(null);
   const [scanInput, setScanInput] = useState("");
   const [scanResult, setScanResult] = useState(null);
+
+  // Assayer Bench State
+  const [assayTokenId, setAssayTokenId] = useState("TKN-101");
+  const [measuredMoisture, setMeasuredMoisture] = useState(12.5);
+  const [foreignMatter, setForeignMatter] = useState(0.5);
+  const [assayerNotes, setAssayerNotes] = useState("Standard physical probe inspection passed.");
+  const [assayMsg, setAssayMsg] = useState("");
+  const [isSubmittingAssay, setIsSubmittingAssay] = useState(false);
 
   const maxAllowable = (parseFloat(registeredAcres || 0) * (CROP_CEILINGS[crop] || 25.0)).toFixed(1);
   const isOverCeiling = parseFloat(qty) > parseFloat(maxAllowable);
@@ -107,7 +115,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/queue-status/${userPhone}`);
       const data = await res.json();
-      setSlots(data.slots);
+      setSlots(data.slots || []);
     } catch (err) {
       console.error(err);
     }
@@ -117,7 +125,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/swap-market?exclude_phone=${userPhone}`);
       const data = await res.json();
-      setMarketSlots(data.market_slots);
+      setMarketSlots(data.market_slots || []);
     } catch (err) {
       console.error(err);
     }
@@ -137,8 +145,8 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/nearest-mandis`);
       const data = await res.json();
-      setMandis(data);
-      if (data.length > 0) setSelectedMandi(data[0].id);
+      setMandis(data || []);
+      if (data && data.length > 0) setSelectedMandi(data[0].id);
     } catch (err) {
       console.error(err);
     }
@@ -148,7 +156,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/slot-capacities`);
       const data = await res.json();
-      setCapacities(data);
+      setCapacities(data || {});
     } catch (err) {
       console.error(err);
     }
@@ -190,7 +198,6 @@ export default function App() {
     }
   };
 
-  // Weather Reschedule Handler
   const handleWeatherReschedule = async (token, safeDate) => {
     try {
       const res = await fetch(`${API_BASE}/reschedule-weather`, {
@@ -215,7 +222,6 @@ export default function App() {
     }
   };
 
-  // P2P Swap Handlers
   const handleListForSwap = async (tokenId) => {
     try {
       const res = await fetch(`${API_BASE}/list-for-swap`, {
@@ -264,7 +270,6 @@ export default function App() {
     }
   };
 
-  // Cancellation Handler
   const handleCancelSlot = async (tokenId) => {
     try {
       const res = await fetch(`${API_BASE}/cancel-slot`, {
@@ -291,7 +296,6 @@ export default function App() {
     }
   };
 
-  // WhatsApp Driver Dispatch Handler
   const handleSendToDriver = (token) => {
     if (!driverPhone || driverPhone.trim().length < 10) {
       alert("Please enter a valid 10-digit mobile number for the driver.");
@@ -324,21 +328,71 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
     setDriverPhone("");
   };
 
-  // Admin Verification Handler
   const handleAdminVerify = async (e) => {
     e.preventDefault();
+    if (!scanInput.trim()) return;
     try {
       const res = await fetch(`${API_BASE}/admin/verify-ticket`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw_qr_input: scanInput }),
+        body: JSON.stringify({ raw_qr_input: scanInput.trim() }),
       });
       const data = await res.json();
       setScanResult(data);
+      if (data.success && data.token) {
+        setAssayTokenId(data.token.id);
+        setMeasuredMoisture(data.token.moisture_percent || 12.0);
+      }
       fetchAdminStats();
       if (user) fetchSlots(user.phone);
     } catch (err) {
       alert("Verification request failed.");
+    }
+  };
+
+  const handleQualitySubmit = async () => {
+    if (!assayTokenId || assayTokenId.trim() === "") {
+      alert("Please specify a Token ID first (e.g., TKN-101) or click any row in the yard manifest.");
+      return;
+    }
+
+    const moistureVal = parseFloat(measuredMoisture);
+    const foreignVal = parseFloat(foreignMatter);
+
+    if (isNaN(moistureVal) || moistureVal < 5 || moistureVal > 30) {
+      alert("Please enter a realistic moisture percentage between 5% and 30%.");
+      return;
+    }
+
+    setIsSubmittingAssay(true);
+    setAssayMsg("");
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/assess-quality`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token_id: assayTokenId.trim(),
+          measured_moisture: moistureVal,
+          foreign_matter_percent: isNaN(foreignVal) ? 0.0 : foreignVal,
+          assayer_notes: assayerNotes || "Standard probe test certified"
+        }),
+      });
+
+      const data = await res.json();
+      setIsSubmittingAssay(false);
+
+      if (data.success) {
+        setAssayMsg(data.message);
+        fetchAdminStats();
+        if (user) fetchSlots(user.phone);
+      } else {
+        alert(data.message || "Failed to certify quality.");
+      }
+    } catch (err) {
+      setIsSubmittingAssay(false);
+      console.error(err);
+      alert("Network Error: Could not connect to FastAPI backend on http://127.0.0.1:8000.");
     }
   };
 
@@ -365,7 +419,7 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
         </div>
       </div>
 
-      {/* ======================= 1. FARMER PORTAL ======================= */}
+      {/* 1. FARMER PORTAL */}
       {portalMode === "farmer" && (
         <>
           {!user ? (
@@ -403,7 +457,6 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                 </div>
               </header>
 
-              {/* Farmer Tabs */}
               <nav className="tab-bar">
                 <button
                   className={activeTab === "tracker" ? "active" : ""}
@@ -423,10 +476,15 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                 >
                   Schedule Delivery Slot
                 </button>
+                <button
+                  className={activeTab === "payments" ? "active" : ""}
+                  onClick={() => { setActiveTab("payments"); setMsg(""); }}
+                >
+                  💰 DBT Disbursal Status
+                </button>
               </nav>
 
               <main className="content-body">
-                {/* Tab 1: Live Tracker */}
                 {activeTab === "tracker" && (
                   <div className="section">
                     <h3>Active Mandi Passes & Security Badges</h3>
@@ -456,7 +514,6 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                                 </span>
                               </div>
 
-                              {/* Mandi Rain Guard Warning & Reschedule Card */}
                               {s.status === "Booked" && s.has_weather_risk && (
                                 <div className="rain-alert-card">
                                   <div className="rain-alert-header">
@@ -495,10 +552,10 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                                 <div><span>Crop & Net Load:</span> <strong>{s.crop} ({s.quantity_quintals} Qtl)</strong></div>
                                 <div><span>Destination:</span> <strong>{s.assigned_mandi}</strong></div>
                                 <div><span>Arrival Window:</span> <strong>{s.time_slot} ({s.booking_date})</strong></div>
-                                <div><span>Net Payout:</span> <strong className="green-text">₹{s.net_payout?.toLocaleString()}</strong></div>
+                                <div><span>Moisture & Grade:</span> <strong>{s.moisture_percent}% ({s.quality_grade})</strong></div>
+                                <div><span>Net MSP Payout:</span> <strong className="green-text">₹{s.net_payout?.toLocaleString()}</strong></div>
                               </div>
 
-                              {/* WhatsApp Driver Share Integration */}
                               {s.status === "Booked" && (
                                 <div className="driver-share-box">
                                   {sharingTokenId === s.id ? (
@@ -540,7 +597,6 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                                 </div>
                               )}
 
-                              {/* P2P Slot Swap Action Button */}
                               {!s.is_listed_for_swap && s.status === "Booked" && (
                                 <div className="swap-action-box">
                                   {listingTokenId === s.id ? (
@@ -573,7 +629,6 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                                 </div>
                               )}
 
-                              {/* Ticket Cancellation Button */}
                               {s.status === "Booked" && (
                                 <div className="cancel-action-box">
                                   {cancellingTokenId === s.id ? (
@@ -628,7 +683,6 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                   </div>
                 )}
 
-                {/* Tab 2: P2P Slot Swap Board */}
                 {activeTab === "swap" && (
                   <div className="section">
                     <div className="swap-board-header">
@@ -688,7 +742,6 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                   </div>
                 )}
 
-                {/* Tab 3: Booking Form */}
                 {activeTab === "book" && (
                   <div className="section narrow">
                     <h3>Schedule Mandi Delivery</h3>
@@ -814,13 +867,98 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                     </form>
                   </div>
                 )}
+
+                {activeTab === "payments" && (
+                  <div className="section">
+                    <div className="payment-window-header">
+                      <h3>🏦 Direct Benefit Transfer (DBT) & Mandi Settlement Ledger</h3>
+                      <p className="section-desc">
+                        Official PFMS and RBI e-Kuber treasury integration for transparent Minimum Support Price (MSP) disbursals.
+                      </p>
+                    </div>
+
+                    {slots.length === 0 ? (
+                      <p className="empty-state">No payment records found. Deliver grain through an active pass to initialize DBT.</p>
+                    ) : (
+                      <div className="grid-cards">
+                        {slots.map((s) => {
+                          const dbt = s.dbt_details || {};
+                          const isCredited = dbt.payout_status?.includes("Credited");
+
+                          return (
+                            <div key={s.id} className="token-card payment-card">
+                              <div className="token-header">
+                                <div>
+                                  <span className="token-id">{s.id}</span>
+                                  <span className="bay-badge">{s.crop} ({s.quantity_quintals} Qtl)</span>
+                                </div>
+                                <span className={`status-pill ${isCredited ? "at-weighbridge" : "booked"}`}>
+                                  {dbt.payout_status || "Processing"}
+                                </span>
+                              </div>
+
+                              <div className="payout-amount-box">
+                                <span className="payout-amount-label">Net Payable Amount (MSP):</span>
+                                <strong className="payout-amount-value">₹{s.net_payout?.toLocaleString()}</strong>
+                                <span className="payout-sub">Base MSP: ₹{s.base_msp}/Qtl • {s.quality_grade}</span>
+                              </div>
+
+                              <div className="details-table payment-details">
+                                <div><span>Beneficiary Name:</span> <strong>{s.farmer_name}</strong></div>
+                                <div><span>Masked Aadhaar:</span> <strong>{dbt.aadhaar || "XXXX-XXXX-4819"}</strong></div>
+                                <div><span>Bank & Branch:</span> <strong>{dbt.bank || "State Bank of India"}</strong></div>
+                                <div><span>Masked Account:</span> <strong>{dbt.account_masked || "••••••••4102"}</strong></div>
+                                <div><span>PFMS Treasury Ref:</span> <strong className="mono-text">{dbt.pfms_ref_no || "PFMS-2026-IN-893021"}</strong></div>
+                                <div><span>Settlement Channel:</span> <strong>RBI e-Kuber Auto-Clearing</strong></div>
+                              </div>
+
+                              <div className="disbursal-pipeline">
+                                <div className="pipeline-title">Disbursal Pipeline Progress:</div>
+                                <div className="timeline-steps">
+                                  <div className="step completed">
+                                    <div className="step-dot">✓</div>
+                                    <div className="step-info">
+                                      <strong>Gate Pass Authorized</strong>
+                                      <span>Token validated at entry checkpost</span>
+                                    </div>
+                                  </div>
+                                  <div className={`step ${s.status !== "Booked" ? "completed" : "pending"}`}>
+                                    <div className="step-dot">{s.status !== "Booked" ? "✓" : "2"}</div>
+                                    <div className="step-info">
+                                      <strong>Gross & Tare Weighbridge</strong>
+                                      <span>Weighbridge net tonnage verified</span>
+                                    </div>
+                                  </div>
+                                  <div className={`step ${s.status === "Unloaded" ? "completed" : "pending"}`}>
+                                    <div className="step-dot">{s.status === "Unloaded" ? "✓" : "3"}</div>
+                                    <div className="step-info">
+                                      <strong>Quality Assayer Pass</strong>
+                                      <span>Moisture inspection sign-off ({s.moisture_percent}%)</span>
+                                    </div>
+                                  </div>
+                                  <div className={`step ${isCredited ? "credited" : "queued"}`}>
+                                    <div className="step-dot">{isCredited ? "✓" : "4"}</div>
+                                    <div className="step-info">
+                                      <strong>DBT Bank Disbursal</strong>
+                                      <span>{isCredited ? "Credited to Bank Account" : "Queued in Treasury Batch"}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </main>
             </div>
           )}
         </>
       )}
 
-      {/* ======================= 2. MANDI OFFICIAL ADMIN PORTAL ======================= */}
+      {/* 2. MANDI OFFICIAL ADMIN PORTAL */}
       {portalMode === "admin" && (
         <>
           {!adminUser ? (
@@ -855,7 +993,7 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                 <button className="text-btn" onClick={() => setAdminUser(null)}>Lock Console</button>
               </header>
 
-              <main className="content-body">
+              <main className="content-body wide-admin">
                 {adminStats && (
                   <div className="stats-row">
                     <div className="stat-card">
@@ -878,6 +1016,7 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                 )}
 
                 <div className="admin-grid">
+                  {/* Column 1: QR Scanner */}
                   <div className="scanner-panel">
                     <h3>📷 High-Speed QR Checkpost Scanner</h3>
                     <p className="section-desc">Scan or input the farmer's HQ QR token hash to verify digital authenticity.</p>
@@ -913,8 +1052,88 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                     )}
                   </div>
 
+                  {/* Column 2: Moisture Assessment & Quality Check Bench */}
+                  <div className="assayer-panel">
+                    <div className="assayer-header">
+                      <h3>🔬 FCI Moisture & Quality Bench</h3>
+                      <span className="assayer-badge">Official Assayer Terminal</span>
+                    </div>
+                    <p className="section-desc">
+                      Log electronic probe moisture tests and physical grain purity to finalize statutory MSP deductions.
+                    </p>
+
+                    {assayMsg && <div className="alert-banner">{assayMsg}</div>}
+
+                    <div className="assayer-form">
+                      <div className="input-group">
+                        <label>Active Lot / Token ID</label>
+                        <input
+                          type="text"
+                          value={assayTokenId}
+                          onChange={(e) => setAssayTokenId(e.target.value)}
+                          placeholder="e.g. TKN-101"
+                        />
+                      </div>
+
+                      <div className="form-row">
+                        <div className="input-group">
+                          <label>Measured Moisture % (Target ≤12%)</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={measuredMoisture}
+                            onChange={(e) => setMeasuredMoisture(e.target.value)}
+                          />
+                        </div>
+                        <div className="input-group">
+                          <label>Foreign Matter % (Max 1%)</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={foreignMatter}
+                            onChange={(e) => setForeignMatter(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="moisture-slab-preview">
+                        <div className="slab-title">Calculated Grade & Penalty Slab:</div>
+                        {parseFloat(measuredMoisture) <= 12.0 ? (
+                          <span className="slab-badge optimal">Grade A: 100% MSP Payout (Optimal)</span>
+                        ) : parseFloat(measuredMoisture) <= 14.0 ? (
+                          <span className="slab-badge warning">
+                            Grade B: 1.5% deduction per percent above 12% moisture
+                          </span>
+                        ) : (
+                          <span className="slab-badge danger">
+                            Grade C: Heavy Moisture (&gt;14%) • Max 5% penalty
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="input-group">
+                        <label>Assayer Notes / Grain Condition</label>
+                        <input
+                          type="text"
+                          value={assayerNotes}
+                          onChange={(e) => setAssayerNotes(e.target.value)}
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        className="primary-btn assayer-btn"
+                        onClick={handleQualitySubmit}
+                        disabled={isSubmittingAssay}
+                      >
+                        {isSubmittingAssay ? "Certifying..." : "⚖️ Certify Quality & Lock DBT Payout"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Column 3: Live Manifest & Disbursal Table */}
                   <div className="yard-feed-panel">
-                    <h3>Live Yard Manifest</h3>
+                    <h3>Live Yard Manifest & Treasury Settlement</h3>
                     <div className="table-wrapper">
                       <table className="admin-table">
                         <thead>
@@ -922,21 +1141,54 @@ _Show this pass at Gate Checkpost #2 for priority entry._`;
                             <th>Token</th>
                             <th>Farmer</th>
                             <th>Crop / Qtl</th>
-                            <th>Bay</th>
+                            <th>Moisture</th>
                             <th>Status</th>
+                            <th>Action</th>
                           </tr>
                         </thead>
                         <tbody>
                           {adminStats?.all_passes.map((p) => (
-                            <tr key={p.id}>
+                            <tr 
+                              key={p.id}
+                              onClick={() => {
+                                setAssayTokenId(p.id);
+                                setMeasuredMoisture(p.moisture_percent || 12.0);
+                                setForeignMatter(p.foreign_matter_percent || 0.5);
+                              }}
+                              style={{ cursor: "pointer" }}
+                              title="Click to load into Quality Bench"
+                            >
                               <td><strong>{p.id}</strong></td>
                               <td>{p.farmer_name}</td>
-                              <td>{p.quantity_quintals} Qtl {p.crop}</td>
-                              <td>{p.assigned_bay}</td>
+                              <td>{p.quantity_quintals} Qtl</td>
+                              <td><strong>{p.moisture_percent}%</strong></td>
                               <td>
                                 <span className={`table-status ${p.status.toLowerCase().replace(/\s+/g, "-")}`}>
                                   {p.status}
                                 </span>
+                              </td>
+                              <td>
+                                {p.status === "At Weighbridge" ? (
+                                  <button
+                                    className="release-dbt-table-btn"
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      await fetch(`${API_BASE}/admin/release-payout`, {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ token_id: p.id })
+                                      });
+                                      fetchAdminStats();
+                                      if (user) fetchSlots(user.phone);
+                                    }}
+                                  >
+                                    💰 Release DBT
+                                  </button>
+                                ) : (
+                                  <span style={{ fontSize: "0.72rem", color: "var(--text-muted)" }}>
+                                    {p.status === "Unloaded" ? "Credited" : "Pending Gate"}
+                                  </span>
+                                )}
                               </td>
                             </tr>
                           ))}

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import date, timedelta
 import math
 import hashlib
@@ -10,13 +10,12 @@ app = FastAPI(title="KisanSetu Unified APMC Logistics & Procurement Engine")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Agro-climatic legal ceiling caps (Quintals per Acre)
 CROP_YIELD_CAPS = {
     "Wheat": 25.0,
     "Paddy": 28.0,
@@ -54,7 +53,6 @@ ADMIN_CREDENTIALS = {
     "officer": "Inspector V. Sharma"
 }
 
-# Mandi Centers with Weather Radar Integration
 MANDI_CENTERS = [
     {
         "id": "MND-01",
@@ -135,7 +133,8 @@ SLOTS_DB: List[Dict] = [
         "booking_date": str(date.today()),
         "time_slot": "10:00 AM - 10:30 AM",
         "moisture_percent": 11.5,
-        "quality_grade": "Grade A (Zero Penalty)",
+        "foreign_matter_percent": 0.5,
+        "quality_grade": "Grade A (Optimal - 100% MSP Cleared)",
         "status": "Booked",
         "queue_position": 2,
         "estimated_wait_mins": 25,
@@ -148,8 +147,10 @@ SLOTS_DB: List[Dict] = [
         "safe_date": str(date.today() + timedelta(days=1)),
         "dbt_details": {
             "aadhaar": "XXXX-XXXX-4819",
-            "bank": "SBI (...4102)",
-            "payout_status": "Ready for Auto-Disbursal"
+            "bank": "State Bank of India (SBIN0001234)",
+            "account_masked": "••••••••4102",
+            "payout_status": "Ready for Auto-Disbursal",
+            "pfms_ref_no": "PFMS-2026-IN-893021"
         },
         "notification_log": [
             "⚠️ Weather Guard Advisory: Severe rainfall forecast today for Taraori Yard.",
@@ -176,7 +177,8 @@ SLOTS_DB: List[Dict] = [
         "booking_date": str(date.today()),
         "time_slot": "02:00 PM - 02:30 PM",
         "moisture_percent": 12.0,
-        "quality_grade": "Grade A (Zero Penalty)",
+        "foreign_matter_percent": 0.4,
+        "quality_grade": "Grade A (Optimal - 100% MSP Cleared)",
         "status": "Booked",
         "queue_position": 1,
         "estimated_wait_mins": 10,
@@ -190,14 +192,15 @@ SLOTS_DB: List[Dict] = [
         "swap_reason": "Tractor breakdown - Need earlier or later window",
         "dbt_details": {
             "aadhaar": "XXXX-XXXX-8921",
-            "bank": "PNB (...9120)",
-            "payout_status": "Ready for Auto-Disbursal"
+            "bank": "Punjab National Bank (PUNB0123400)",
+            "account_masked": "••••••••9120",
+            "payout_status": "Ready for Auto-Disbursal",
+            "pfms_ref_no": "PFMS-2026-IN-442190"
         },
         "notification_log": ["Slot listed on P2P Swap Board by Suresh Singh."]
     }
 ]
 
-# Request Models
 class LoginRequest(BaseModel):
     phone: str
     pin: str
@@ -245,7 +248,15 @@ class WeatherRescheduleRequest(BaseModel):
     target_date: str
     target_slot: str
 
-# API Endpoints
+class ReleasePayoutRequest(BaseModel):
+    token_id: str
+
+class QualityAssessmentRequest(BaseModel):
+    token_id: str
+    measured_moisture: float
+    foreign_matter_percent: Optional[float] = 0.5
+    assayer_notes: Optional[str] = "Standard probe test certified"
+
 @app.post("/api/login")
 def login(creds: LoginRequest):
     user = USERS_DB.get(creds.phone)
@@ -285,8 +296,8 @@ def admin_verify_ticket(req: AdminVerifyRequest):
     if target["status"] == "Cancelled":
         return {"success": False, "status": "CANCELLED", "message": f"Denied: Pass {target['id']} was CANCELLED by the farmer."}
 
-    if target["status"] == "At Weighbridge":
-        return {"success": False, "status": "ALREADY_USED", "message": f"Pass {target['id']} has already passed through the checkpost!"}
+    if target["status"] in ["At Weighbridge", "Unloaded"]:
+        return {"success": True, "status": "ALREADY_ADMITTED", "message": f"Pass {target['id']} is already checked in at {target['assigned_bay']}.", "token": target}
 
     expected_hash = generate_hq_hash(target["id"], target["farmer_phone"], target["crop"])
     if target["hq_hash"] != expected_hash:
@@ -295,7 +306,7 @@ def admin_verify_ticket(req: AdminVerifyRequest):
     target["status"] = "At Weighbridge"
     target["queue_position"] = 0
     target["estimated_wait_mins"] = 0
-    target["dbt_details"]["payout_status"] = "DBT Disbursal Initialized"
+    target["dbt_details"]["payout_status"] = "Weighbridge Checkpoint Cleared"
     target["notification_log"].insert(0, f"Gate Entry Authorized by {ADMIN_CREDENTIALS['officer']} at Gate #2 -> {target['assigned_bay']}.")
 
     return {
@@ -305,6 +316,66 @@ def admin_verify_ticket(req: AdminVerifyRequest):
         "token": target
     }
 
+@app.post("/api/admin/assess-quality")
+def assess_quality(req: QualityAssessmentRequest):
+    clean_id = req.token_id.strip().upper()
+    slot = next((s for s in SLOTS_DB if s["id"].upper() == clean_id), None)
+    
+    if not slot:
+        return {"success": False, "message": f"Pass token '{req.token_id}' not found in active manifest."}
+
+    base_rate = float(slot["base_msp"])
+    booked_qty = float(slot["quantity_quintals"])
+    foreign_matter = float(req.foreign_matter_percent or 0.0)
+
+    deduction_rate = 0.0
+    if req.measured_moisture <= 12.0:
+        quality_grade = "Grade A (Optimal - 100% MSP Cleared)"
+    elif 12.0 < req.measured_moisture <= 14.0:
+        excess = req.measured_moisture - 12.0
+        deduction_rate = round((excess * 0.015) * base_rate, 2)
+        quality_grade = f"Grade B (₹{deduction_rate}/Qtl deduction for moisture)"
+    else:
+        deduction_rate = round(0.05 * base_rate, 2)
+        quality_grade = "Grade C (Heavy Moisture - Max 5% Penalty)"
+
+    if foreign_matter > 1.0:
+        dirt_penalty = round((foreign_matter - 1.0) * 15.0, 2)
+        deduction_rate += dirt_penalty
+        quality_grade += f" + ₹{dirt_penalty}/Qtl foreign matter"
+
+    net_rate = max(base_rate - deduction_rate, 1000.0)
+    final_payout = int(net_rate * booked_qty)
+
+    slot["moisture_percent"] = req.measured_moisture
+    slot["foreign_matter_percent"] = foreign_matter
+    slot["quality_grade"] = quality_grade
+    slot["net_payout"] = final_payout
+    slot["dbt_details"]["payout_status"] = "Assay Approved • Ready for Disbursal"
+    
+    slot["notification_log"].insert(
+        0, f"🔬 Quality Assayed: {req.measured_moisture}% Moisture ({quality_grade}). Final MSP locked at ₹{final_payout:,}."
+    )
+
+    return {
+        "success": True,
+        "message": f"Assay certified for {slot['id']}! MSP payout updated to ₹{final_payout:,}.",
+        "token": slot
+    }
+
+@app.post("/api/admin/release-payout")
+def release_payout(req: ReleasePayoutRequest):
+    slot = next((s for s in SLOTS_DB if s["id"] == req.token_id), None)
+    if not slot:
+        return {"success": False, "message": "Slot not found"}
+
+    slot["status"] = "Unloaded"
+    slot["dbt_details"]["payout_status"] = "DBT Credited (PFMS Success)"
+    slot["notification_log"].insert(
+        0, f"💰 DBT Success: ₹{slot['net_payout']:,} credited to {slot['dbt_details']['bank']}. PFMS Ref: {slot['dbt_details']['pfms_ref_no']}."
+    )
+    return {"success": True, "message": f"DBT payment released for {slot['id']}", "token": slot}
+
 @app.post("/api/reschedule-weather")
 def reschedule_weather_slot(req: WeatherRescheduleRequest):
     slot = next((s for s in SLOTS_DB if s["id"] == req.token_id and s["farmer_phone"] == req.phone), None)
@@ -312,31 +383,28 @@ def reschedule_weather_slot(req: WeatherRescheduleRequest):
         return {"success": False, "message": "Ticket not found or unauthorized."}
 
     if slot["status"] in ["At Weighbridge", "Unloaded"]:
-        return {"success": False, "message": "Cannot reschedule: Vehicle already at mandi weighbridge."}
+        return {"success": False, "message": "Cannot reschedule: Vehicle already at weighbridge."}
 
     old_date = slot["booking_date"]
     slot["booking_date"] = req.target_date
     slot["time_slot"] = req.target_slot
-    slot["has_weather_risk"] = False  # cleared because it is moved to clear day
+    slot["has_weather_risk"] = False
     slot["notification_log"].insert(
-        0, f"🌧️ Mandi Rain Guard: Slot safely moved from {old_date} to {req.target_date} ({req.target_slot}) to prevent moisture rot."
+        0, f"🌧️ Mandi Rain Guard: Rescheduled from {old_date} to {req.target_date} ({req.target_slot}) to protect grain."
     )
     return {
         "success": True,
-        "message": f"Pass {req.token_id} protected! Re-allocated to dry window: {req.target_date} ({req.target_slot}).",
+        "message": f"Pass {req.token_id} protected! Re-allocated to {req.target_date} ({req.target_slot}).",
         "token": slot
     }
 
 @app.post("/api/cancel-slot")
 def cancel_slot(req: CancelSlotRequest):
     slot = next((s for s in SLOTS_DB if s["id"] == req.token_id and s["farmer_phone"] == req.phone), None)
-    
     if not slot:
         return {"success": False, "message": "Ticket not found or unauthorized."}
-    
     if slot["status"] in ["At Weighbridge", "Unloaded"]:
-        return {"success": False, "message": "Cannot cancel: Vehicle has already entered the weighbridge."}
-    
+        return {"success": False, "message": "Cannot cancel: Vehicle has already entered the yard."}
     if slot["status"] == "Cancelled":
         return {"success": False, "message": "This pass is already cancelled."}
 
@@ -348,23 +416,12 @@ def cancel_slot(req: CancelSlotRequest):
         SLOT_CAPACITY[time_window] -= 1
         
     for s in SLOTS_DB:
-        if (
-            s["assigned_bay"] == slot["assigned_bay"] 
-            and s["status"] == "Booked" 
-            and s["queue_position"] > slot["queue_position"]
-        ):
+        if s["assigned_bay"] == slot["assigned_bay"] and s["status"] == "Booked" and s["queue_position"] > slot["queue_position"]:
             s["queue_position"] = max(1, s["queue_position"] - 1)
             s["estimated_wait_mins"] = max(5, s["estimated_wait_mins"] - 15)
 
-    slot["notification_log"].insert(
-        0, f"🛑 Ticket cancelled by farmer. Reason: {req.reason}. Bay quota released."
-    )
-    
-    return {
-        "success": True, 
-        "message": f"Pass {req.token_id} cancelled successfully. Mandi capacity restored.",
-        "token": slot
-    }
+    slot["notification_log"].insert(0, f"🛑 Cancelled by farmer: {req.reason}. Quota freed.")
+    return {"success": True, "message": f"Pass {req.token_id} cancelled successfully.", "token": slot}
 
 @app.get("/api/swap-market")
 def get_swap_market(exclude_phone: str = ""):
@@ -382,7 +439,7 @@ def list_slot_for_swap(req: ListSwapRequest):
     slot["is_listed_for_swap"] = True
     slot["swap_reason"] = req.reason
     slot["notification_log"].insert(0, f"🔄 Listed on P2P Swap Board: '{req.reason}'.")
-    return {"success": True, "message": f"Token {req.token_id} listed on the Swap Board!"}
+    return {"success": True, "message": f"Token {req.token_id} listed on Swap Board!"}
 
 @app.post("/api/execute-swap")
 def execute_slot_swap(req: ExecuteSwapRequest):
@@ -400,9 +457,9 @@ def execute_slot_swap(req: ExecuteSwapRequest):
     slot_b["booking_date"] = date_a
     slot_b["is_listed_for_swap"] = False
 
-    slot_a["notification_log"].insert(0, f"🤝 Traded slot with {slot_b['farmer_name']}. New window: {slot_a['time_slot']}.")
-    slot_b["notification_log"].insert(0, f"🤝 Traded slot with {slot_a['farmer_name']}. New window: {slot_b['time_slot']}.")
-    return {"success": True, "message": f"Traded slot! Your new delivery window is {slot_a['time_slot']}."}
+    slot_a["notification_log"].insert(0, f"🤝 Traded slot with {slot_b['farmer_name']} -> {slot_a['time_slot']}.")
+    slot_b["notification_log"].insert(0, f"🤝 Traded slot with {slot_a['farmer_name']} -> {slot_b['time_slot']}.")
+    return {"success": True, "message": f"Traded slot! Delivery window is now {slot_a['time_slot']}."}
 
 @app.get("/api/nearest-mandis")
 def get_nearest_mandis():
@@ -450,13 +507,13 @@ def book_slot(req: SlotBookingRequest):
 
     deduction_rate = 0.0
     if req.moisture_percent <= 12.0:
-        quality_grade = "Grade A (Optimal - 100% MSP)"
+        quality_grade = "Grade A (Optimal - 100% MSP Cleared)"
     elif 12.0 < req.moisture_percent <= 14.0:
         excess = req.moisture_percent - 12.0
         deduction_rate = round((excess * 0.015) * base_rate, 2)
-        quality_grade = f"Grade B (₹{deduction_rate}/Qtl deduction)"
+        quality_grade = f"Grade B (₹{deduction_rate}/Qtl deduction for moisture)"
     else:
-        quality_grade = "Grade C (Heavy Moisture: Advisory to Sun-Dry)"
+        quality_grade = "Grade C (Heavy Moisture - Max 5% Penalty)"
         deduction_rate = round(0.05 * base_rate, 2)
 
     net_rate = max(base_rate - deduction_rate, 1000)
@@ -491,6 +548,7 @@ def book_slot(req: SlotBookingRequest):
         "booking_date": req.booking_date,
         "time_slot": req.time_slot,
         "moisture_percent": req.moisture_percent,
+        "foreign_matter_percent": 0.5,
         "quality_grade": quality_grade,
         "status": "Booked",
         "queue_position": len(SLOTS_DB) + 1,
@@ -502,7 +560,13 @@ def book_slot(req: SlotBookingRequest):
         "has_weather_risk": has_weather_risk,
         "rain_prob": selected_mandi.get("rain_probability", 20),
         "safe_date": selected_mandi.get("safe_reschedule_date", str(date.today() + timedelta(days=1))),
-        "dbt_details": {"aadhaar": USERS_DB.get(req.phone, {}).get("aadhaar_masked", "XXXX-XXXX-9912"), "bank": "SBI Mandi Branch", "payout_status": "Ready for Auto-Disbursal"},
+        "dbt_details": {
+            "aadhaar": USERS_DB.get(req.phone, {}).get("aadhaar_masked", "XXXX-XXXX-9912"),
+            "bank": "State Bank of India (SBIN0001234)",
+            "account_masked": "••••••••4102",
+            "payout_status": "Ready for Auto-Disbursal",
+            "pfms_ref_no": f"PFMS-2026-IN-{len(SLOTS_DB)+9920}"
+        },
         "notification_log": [f"HQ Cryptographic Token generated: {token_id} (Sig: {hq_security_hash})"]
     }
     SLOTS_DB.append(new_booking)
