@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict
-from datetime import date
+from datetime import date, timedelta
 import math
 import hashlib
 
@@ -54,10 +54,44 @@ ADMIN_CREDENTIALS = {
     "officer": "Inspector V. Sharma"
 }
 
+# Mandi Centers with Weather Radar Integration
 MANDI_CENTERS = [
-    {"id": "MND-01", "name": "Taraori Sub-Mandi Yard", "district": "Karnal", "lat": 29.8000, "lon": 76.9200, "active_trucks": 3, "status": "Optimal Load"},
-    {"id": "MND-02", "name": "Karnal Central Main Mandi", "district": "Karnal", "lat": 29.6857, "lon": 76.9907, "active_trucks": 14, "status": "Heavy Congestion"},
-    {"id": "MND-03", "name": "Gharaunda Procurement Center", "district": "Karnal", "lat": 29.5414, "lon": 76.9723, "active_trucks": 1, "status": "Fast Clearance"}
+    {
+        "id": "MND-01",
+        "name": "Taraori Sub-Mandi Yard",
+        "district": "Karnal",
+        "lat": 29.8000,
+        "lon": 76.9200,
+        "active_trucks": 3,
+        "status": "Optimal Load",
+        "rain_probability": 82,
+        "weather_condition": "Heavy Thunderstorm & Downpour Alert",
+        "safe_reschedule_date": str(date.today() + timedelta(days=1))
+    },
+    {
+        "id": "MND-02",
+        "name": "Karnal Central Main Mandi",
+        "district": "Karnal",
+        "lat": 29.6857,
+        "lon": 76.9907,
+        "active_trucks": 14,
+        "status": "Heavy Congestion",
+        "rain_probability": 30,
+        "weather_condition": "Partly Cloudy",
+        "safe_reschedule_date": str(date.today() + timedelta(days=1))
+    },
+    {
+        "id": "MND-03",
+        "name": "Gharaunda Procurement Center",
+        "district": "Karnal",
+        "lat": 29.5414,
+        "lon": 76.9723,
+        "active_trucks": 1,
+        "status": "Fast Clearance",
+        "rain_probability": 15,
+        "weather_condition": "Clear Skies",
+        "safe_reschedule_date": str(date.today() + timedelta(days=1))
+    }
 ]
 
 FARMER_LOCATION = {"lat": 29.8050, "lon": 76.9300}
@@ -93,6 +127,7 @@ SLOTS_DB: List[Dict] = [
         "max_allowable_yield": 62.5,
         "arbitrage_flag": False,
         "assigned_mandi": "Taraori Sub-Mandi Yard (1.2 km away)",
+        "mandi_id": "MND-01",
         "crop": "Wheat",
         "quantity_quintals": 45.0,
         "vehicle_type": "Tractor Trolley",
@@ -108,14 +143,18 @@ SLOTS_DB: List[Dict] = [
         "net_payout": 102375,
         "assigned_bay": "Bay-02 (Heavy Tractor)",
         "is_listed_for_swap": False,
+        "has_weather_risk": True,
+        "rain_prob": 82,
+        "safe_date": str(date.today() + timedelta(days=1)),
         "dbt_details": {
             "aadhaar": "XXXX-XXXX-4819",
             "bank": "SBI (...4102)",
             "payout_status": "Ready for Auto-Disbursal"
         },
         "notification_log": [
+            "⚠️ Weather Guard Advisory: Severe rainfall forecast today for Taraori Yard.",
             "HQ Secure Pass issued for Taraori Sub-Mandi Yard (Bay-02).",
-            "Proof-of-Harvest Verified: 45 Qtl within legal quota."
+            "Proof-of-Harvest Verified: 45 Qtl within legal acreage quota."
         ]
     },
     {
@@ -129,6 +168,7 @@ SLOTS_DB: List[Dict] = [
         "max_allowable_yield": 50.4,
         "arbitrage_flag": False,
         "assigned_mandi": "Taraori Sub-Mandi Yard (1.2 km away)",
+        "mandi_id": "MND-01",
         "crop": "Paddy",
         "quantity_quintals": 35.0,
         "vehicle_type": "Pickup Truck (Bolero)",
@@ -144,6 +184,9 @@ SLOTS_DB: List[Dict] = [
         "net_payout": 76405,
         "assigned_bay": "Bay-01 (Express Light)",
         "is_listed_for_swap": True,
+        "has_weather_risk": True,
+        "rain_prob": 82,
+        "safe_date": str(date.today() + timedelta(days=1)),
         "swap_reason": "Tractor breakdown - Need earlier or later window",
         "dbt_details": {
             "aadhaar": "XXXX-XXXX-8921",
@@ -154,6 +197,7 @@ SLOTS_DB: List[Dict] = [
     }
 ]
 
+# Request Models
 class LoginRequest(BaseModel):
     phone: str
     pin: str
@@ -195,6 +239,13 @@ class CancelSlotRequest(BaseModel):
     phone: str
     reason: str
 
+class WeatherRescheduleRequest(BaseModel):
+    token_id: str
+    phone: str
+    target_date: str
+    target_slot: str
+
+# API Endpoints
 @app.post("/api/login")
 def login(creds: LoginRequest):
     user = USERS_DB.get(creds.phone)
@@ -252,6 +303,28 @@ def admin_verify_ticket(req: AdminVerifyRequest):
         "status": "AUTHORIZED",
         "message": f"Pass Verified: {target['farmer_name']} cleared for entry!",
         "token": target
+    }
+
+@app.post("/api/reschedule-weather")
+def reschedule_weather_slot(req: WeatherRescheduleRequest):
+    slot = next((s for s in SLOTS_DB if s["id"] == req.token_id and s["farmer_phone"] == req.phone), None)
+    if not slot:
+        return {"success": False, "message": "Ticket not found or unauthorized."}
+
+    if slot["status"] in ["At Weighbridge", "Unloaded"]:
+        return {"success": False, "message": "Cannot reschedule: Vehicle already at mandi weighbridge."}
+
+    old_date = slot["booking_date"]
+    slot["booking_date"] = req.target_date
+    slot["time_slot"] = req.target_slot
+    slot["has_weather_risk"] = False  # cleared because it is moved to clear day
+    slot["notification_log"].insert(
+        0, f"🌧️ Mandi Rain Guard: Slot safely moved from {old_date} to {req.target_date} ({req.target_slot}) to prevent moisture rot."
+    )
+    return {
+        "success": True,
+        "message": f"Pass {req.token_id} protected! Re-allocated to dry window: {req.target_date} ({req.target_slot}).",
+        "token": slot
     }
 
 @app.post("/api/cancel-slot")
@@ -336,7 +409,16 @@ def get_nearest_mandis():
     mandi_list = []
     for m in MANDI_CENTERS:
         dist = calculate_distance_km(FARMER_LOCATION["lat"], FARMER_LOCATION["lon"], m["lat"], m["lon"])
-        mandi_list.append({"id": m["id"], "name": m["name"], "distance_km": dist, "active_trucks": m["active_trucks"], "status": m["status"]})
+        mandi_list.append({
+            "id": m["id"], 
+            "name": m["name"], 
+            "distance_km": dist, 
+            "active_trucks": m["active_trucks"], 
+            "status": m["status"],
+            "rain_probability": m["rain_probability"],
+            "weather_condition": m["weather_condition"],
+            "safe_reschedule_date": m["safe_reschedule_date"]
+        })
     mandi_list.sort(key=lambda x: x["distance_km"])
     return mandi_list
 
@@ -386,6 +468,8 @@ def book_slot(req: SlotBookingRequest):
     dist = calculate_distance_km(FARMER_LOCATION["lat"], FARMER_LOCATION["lon"], selected_mandi["lat"], selected_mandi["lon"])
     hq_security_hash = generate_hq_hash(token_id, req.phone, req.crop)
 
+    has_weather_risk = selected_mandi.get("rain_probability", 0) >= 60
+
     SLOT_CAPACITY[req.time_slot] = SLOT_CAPACITY.get(req.time_slot, 0) + 1
 
     new_booking = {
@@ -399,6 +483,7 @@ def book_slot(req: SlotBookingRequest):
         "max_allowable_yield": max_allowable_yield,
         "arbitrage_flag": arbitrage_flag,
         "assigned_mandi": f"{selected_mandi['name']} ({dist} km away)",
+        "mandi_id": selected_mandi["id"],
         "crop": req.crop,
         "quantity_quintals": booked_quantity,
         "vehicle_type": req.vehicle_type,
@@ -414,6 +499,9 @@ def book_slot(req: SlotBookingRequest):
         "net_payout": final_payment,
         "assigned_bay": assigned_bay,
         "is_listed_for_swap": False,
+        "has_weather_risk": has_weather_risk,
+        "rain_prob": selected_mandi.get("rain_probability", 20),
+        "safe_date": selected_mandi.get("safe_reschedule_date", str(date.today() + timedelta(days=1))),
         "dbt_details": {"aadhaar": USERS_DB.get(req.phone, {}).get("aadhaar_masked", "XXXX-XXXX-9912"), "bank": "SBI Mandi Branch", "payout_status": "Ready for Auto-Disbursal"},
         "notification_log": [f"HQ Cryptographic Token generated: {token_id} (Sig: {hq_security_hash})"]
     }

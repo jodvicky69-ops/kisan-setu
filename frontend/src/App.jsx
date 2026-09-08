@@ -190,6 +190,31 @@ export default function App() {
     }
   };
 
+  // Weather Reschedule Handler
+  const handleWeatherReschedule = async (token, safeDate) => {
+    try {
+      const res = await fetch(`${API_BASE}/reschedule-weather`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token_id: token.id,
+          phone: user.phone,
+          target_date: safeDate,
+          target_slot: "10:00 AM - 10:30 AM",
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMsg(data.message);
+        fetchSlots(user.phone);
+      } else {
+        alert(data.message);
+      }
+    } catch (err) {
+      alert("Rescheduling request failed.");
+    }
+  };
+
   // P2P Swap Handlers
   const handleListForSwap = async (tokenId) => {
     try {
@@ -290,7 +315,7 @@ export default function App() {
 
 🗺️ *Gate #2 Navigation:* https://maps.google.com/?q=29.8000,76.9200
 ━━━━━━━━━━━━━━━━━━━━━━
-_Show this pass at Gate Checkpost #2 for entry._`;
+_Show this pass at Gate Checkpost #2 for priority entry._`;
 
     const encodedMsg = encodeURIComponent(message);
     const waUrl = `https://wa.me/${formattedPhone}?text=${encodedMsg}`;
@@ -430,6 +455,26 @@ _Show this pass at Gate Checkpost #2 for entry._`;
                                   {s.status}
                                 </span>
                               </div>
+
+                              {/* Mandi Rain Guard Warning & Reschedule Card */}
+                              {s.status === "Booked" && s.has_weather_risk && (
+                                <div className="rain-alert-card">
+                                  <div className="rain-alert-header">
+                                    <span>🌧️ <strong>Mandi Rain Guard ({s.rain_prob}% Risk)</strong></span>
+                                    <span className="rain-risk-tag">Moisture Spoilage Danger</span>
+                                  </div>
+                                  <p className="rain-desc">
+                                    Heavy precipitation detected near {s.assigned_mandi}. Uncovered grain waiting in open trolleys risks moisture penalties or total rejection.
+                                  </p>
+                                  <button
+                                    type="button"
+                                    className="rain-reschedule-btn"
+                                    onClick={() => handleWeatherReschedule(s, s.safe_date)}
+                                  >
+                                    🛡️ Rain-Safe Reschedule to {s.safe_date} (Clear Skies)
+                                  </button>
+                                </div>
+                              )}
 
                               {s.is_listed_for_swap && (
                                 <div className="swap-listed-badge">
@@ -709,6 +754,9 @@ _Show this pass at Gate Checkpost #2 for entry._`;
                                 <span className={`load-indicator ${m.status.toLowerCase().replace(/\s+/g, "-")}`}>
                                   {m.status}
                                 </span>
+                              </div>
+                              <div className="mandi-weather-subrow">
+                                <span>{m.rain_probability >= 60 ? "🌧️" : "☀️"} {m.weather_condition} ({m.rain_probability}% Rain Risk)</span>
                               </div>
                             </div>
                           ))}
